@@ -10,10 +10,13 @@ import sys
 import socket
 import serial
 import serial.threaded
+import threading
 
+timeoutBeforeTransmit = 0.05
 
 class SerialToNet(serial.threaded.Protocol):
     """serial->socket"""
+    dataToSend = ''
 
     def __init__(self):
         self.socket = None
@@ -22,9 +25,19 @@ class SerialToNet(serial.threaded.Protocol):
         return self
 
     def data_received(self, data):
+        self.dataToSend = self.dataToSend + data
+        try:
+            if self.t.isAlive():
+                self.t.cancel()
+        except:
+            pass
+        self.t = threading.Timer( timeoutBeforeTransmit, self.sendData, [self.dataToSend,] )
+        self.t.start()
+    
+    def sendData(self, data):
         if self.socket is not None:
-            self.socket.sendall(data)
-
+            self.socket.send(data)
+            self.dataToSend = ''
 
 if __name__ == '__main__':
     import argparse
@@ -92,10 +105,17 @@ it waits for the next connect.
     group = parser.add_argument_group('network settings')
 
     group.add_argument(
-            '-P', '--localport',
+            '-H', '--hostname',
+            type=str,
+            help='remote host name or IP address',
+            default=None)
+
+    group.add_argument(
+            '-P', '--remoteport',
             type=int,
-            help='local TCP port',
+            help='remote TCP port',
             default=7777)
+
 
     args = parser.parse_args()
 
@@ -127,15 +147,12 @@ it waits for the next connect.
     serial_worker = serial.threaded.ReaderThread(ser, ser_to_net)
     serial_worker.start()
 
-    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(('', args.localport))
-    srv.listen(1)
     try:
         while True:
-            sys.stderr.write("Waiting for connection on {}...\n".format(args.localport))
-            client_socket, addr = srv.accept()
-            sys.stderr.write('Connected by {}\n'.format(addr))
+            sys.stderr.write("Opening connection to {}:{}...\n".format(args.hostname, args.localport))
+	    client_socket = socket.socket()
+            client_socket.connect((args.hostname, args.localport))
+            sys.stderr.write('Connected\n')
             try:
                 ser_to_net.socket = client_socket
                 # enter network <-> serial loop
@@ -160,3 +177,4 @@ it waits for the next connect.
 
     sys.stderr.write('\n--- exit ---\n')
     serial_worker.stop()
+
